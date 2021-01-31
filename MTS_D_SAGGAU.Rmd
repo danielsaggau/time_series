@@ -1,0 +1,619 @@
+---
+title: "Multivariate Time Series Analysis - Take Home Exam"
+author: "Daniel Saggau - Student Number: 12144037"
+date: "11/08/2020"
+fontsize: 11pt
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Question 1 (Descriptive Data Analysis)
+
+## 1 a) Acquire the time series of three economic indicators (GDP, Unemployment, etc.) of your choice from a reliable source (OECD, World Bank, etc.). 
+
+```{r, echo = T, results ="hide", include ="FALSE"}
+library("readr")
+library("readxl")
+library("imputeTS")
+library("forecast")
+library("vars")
+library("tseries")
+library("tidyverse")
+```
+
+After undertaking some research, i picked three economic instruments namely foreign direct invest as a percentage of GDP(FDI), gross domestic product growth per capita (GDP) and carbon emission per capita.
+While looking for potential data sources, the Worldbank provided longer FDI time series data relative to the OECD data, complemented by GDP growth data in the correct format.
+The OECD provided more complete recent & historic data on carbon emission.
+Henceforth, we will be using the Worldbank data for the FDI & GDP variable and the OECD data for carbon emission. 
+
+### FDI and GDP Data
+
+```{r}
+# Worldbank Data (2020) World development indicators:
+# Variable 1: FDI net inflows as a percentage of GDP
+# Variable 2: GDP per capita growth (annual %)
+# Accessed on: 07 November 2020
+# https://databank.worldbank.org/source/world-development-indicators
+
+fdi_gdp <- read_excel("Downloads/World_bank.xlsx",
+  col_types = c(
+    "skip", "skip", "numeric",
+    "skip", "numeric", "numeric"
+  ), na = ".."
+)
+```
+
+### Carbon Emission Data
+
+First and foremost, one has to ensure that there is only french data in our data set.
+Therefore, we use the filter function for our cO2 data.
+
+```{r}
+# OECD (2020)
+# Variable 3: Air and GHG emissions (indicator) tonnes (metric) /per capita
+# Accessed on: 06 November 2020
+# https://data.oecd.org/air/air-and-ghg-emissions.html
+
+cO2 <- read_csv("Downloads/OECD.csv",
+  col_types = cols(
+    INDICATOR = col_skip(),
+    SUBJECT = col_skip(), MEASURE = col_skip(),
+    FREQUENCY = col_skip(), `Flag Codes` = col_skip()
+  )
+)
+
+# Filtering for the country for our cO2 data
+cO2 <- cO2 %>%
+  filter(LOCATION == "FRA")
+cO2 <- cO2[, 2:3]
+```
+
+
+## b) Ensure that your data foundation is of proper format and quality, e.g. correct data type, no missing values, etc..
+
+### Initial Summary of the data
+
+We can have a first look at our data set: 
+One can see that there are some missing values (see table below).
+GDP has one missing value at the beginning in 1960.
+Further, we can see some missing values at the end of the FDI and GDP dataset.
+Carbon emission needs to be interpolated for the year 2019 to ensure both data sets have the same time period.
+
+```{r}
+head(c(cO2, fdi_gdp))
+```
+
+### First Preprocessing-Steps
+
+Looking at the Worldbank data we firstly need to subset the data, removing the irrelevant empty columns at the bottom.
+Subsequently, we can relabel our columns, using more comprehensive names.
+As we can see above, we need an additional entry for the carbon emission.
+Henceforth, we can add the 2019 as a missing observation at this step, to later interpolate the missing value.
+Lastly, we can reformat our data into the time series format.
+
+```{r}
+# As we can see, the bottom rows can be omitted as they are irrelevant:
+fdi_gdp <- fdi_gdp[1:60, ]
+
+# Further, we can provided more intuitive names for the columns of our data
+colnames(fdi_gdp) <- c("Year", "gdp", "fdi")
+colnames(cO2) <- c("Year", "cO2")
+
+# Adding missing value to cO2 to accomodate size of other data set
+cO2 <- rbind(cO2, c(2019, NA))
+
+# Saving the raw data set into single file (optional)
+# file <- cbind(cO2,fdi_gdp)
+# write.csv(file, "raw_data.csv")
+
+# Formatting the data into the correct time series format
+fdi <- ts(fdi_gdp$fdi, start = 1960, end = 2019, frequency = 1)
+gdp <- ts(fdi_gdp$gdp, start = 1960, end = 2019, frequency = 1)
+cO2 <- ts(cO2$cO2, start = 1960, end = 2019, frequency = 1)
+```
+
+### Missing Data
+
+How to handle missing observations is very much dependent on the underlying structure of the data (e.g. whether the data was missing at random (MAR), not missing at random (NMAR) or missing completely at random(MCAR)).
+A universally applicable approach would be to impute via the mean, median or random imputation, although this could result in poor results, as illustrated with this data set. 
+In this case we wont be doing imputation via the mean or median because our missing data is located at the beginning of our trend and imputing like this would over/under-estimate the missing values (fdi between 1960 and 1970). 
+Another solution is imputation via interpolation.
+Here, we will look at two common regression methods for interpolation, namely the spline method and the linear method.
+For illustrative purpose, we will interpolate the variables subsequently and examine the imputed values prior to selecting a method.
+One brief remark for the subsequent analysis: I like to remove obsolete data from our environment, to keep the global environment clean and comprehensive.
+These cleaning steps are optional.
+
+#### Missing Value Interpolation for FDI
+
+For FDI we can see some differences between the linear and spline method.
+The spline methods relies on the assumption that there similarity in the data, which is the case here.
+As we can see in the second plot, the linear interpolation does not match the original pattern of the data as well as the spline method.
+Further, the linear interpolation could be problematic when taking differences of our data, depending on whether our data is non-stationary or stationary.
+We will proceed using the spline method, due to its historic competitive performance, enabling to approximate the missing data in a manner such that the original data structure is accommodated.
+
+```{r}
+# For a detailed analysis of missing values,
+# we can use the statsNA() function, providing detailed insights into the missing values.
+# This step is optional and perhaps more useful less comprehensive data sets:
+# statsNA(fdi)
+
+# Plotting our FDI with Missing values
+autoplot(fdi, main = "Net Foreign Direct Investment with Missing Values ",
+         ylab = "FDI", xlab = "Year")
+fdi_linear <- na_interpolation(fdi, option = "linear")
+fdi_spline <- na_interpolation(fdi, option = "spline")
+comparison_fdi <- cbind(fdi_linear, fdi_spline)
+
+# Plotting our FDI after interpolation of the missing values
+autoplot(comparison_fdi,
+  main = "Comparing splines and linear interpolation methods for FDI",
+  ylab = "Foreign Direct Investment",
+  xlab = "Year"
+)
+fdi <- fdi_spline
+
+# Cleaning the environment (optional optional but advised):
+rm(fdi_linear, fdi_spline, comparison_fdi)
+```
+
+
+#### Missing Value Interpolation for Carbon Emission
+
+We will repeat the prior process for carbon emission. 
+Here we can see that the results are identical, leading to an overlapping autoplot.
+Either method will work here.
+Plotting the interpolation is not printed here and optional, but the code is included below for completeness.
+
+```{r}
+# Detailed examination of missing values (optional & redundant for this instance)
+# statsNA(cO2_ts)
+
+# autoplot(cO2, main ="Carbon Emission with Missing Values", 
+# ylab ="Carbon Emission per capita", xlab="Year")
+
+linear_carbon <- na_interpolation(cO2, option = "linear")
+spline_carbon <- na_interpolation(cO2, option = "spline")
+comparison_carbon <- cbind(linear_carbon, spline_carbon)
+
+lapply(comparison_carbon, tail)
+
+# Plotting the data (optional)
+# autoplot(comparison_carbon, main ="Comparison of 
+# linear and spline Interpolation for carbon emission",
+# ylab ="Carbon Emission per capita",  xlab="Year")
+
+# Now we can rename our variable for simplicity when proceeding
+cO2 <- linear_carbon
+
+# Cleaning the environment (optional but advised)
+rm(spline_carbon, linear_carbon, comparison_carbon)
+```
+
+#### Missing Value Interpolation for GDP
+
+Using the interpolation approach, the GDP results suggest for the same conclusion as for carbon emission. 
+The results are identical.
+Again, the code for plot is included for completeness but merely shows how both methods overlap.
+
+```{r}
+# Detailed examination of missing values (optional & redundant for this instance)
+# statsNA(gdp)
+# Plot, with missing values (optional & redundant for this instance)
+# autoplot(gdp, main ="GDP Growth per capita with Missing Values", ylab ="GDP Growth per capita", xlab="Year")
+
+# Now we interpolate our data
+gdp_l <- na_interpolation(gdp, option = "linear")
+gdp_s <- na_interpolation(gdp, option = "spline")
+
+comparison_gdp <- cbind(gdp_l, gdp_s)
+lapply(comparison_gdp, head)
+
+# Plotting the data (optional)
+# autoplot(comparison_gdp, main ="Comparison of Spline and Linear Interpolation for GDP")
+
+# Renaming our variable
+gdp <- gdp_s
+
+# Cleaning the environment (optional but advised)
+rm(gdp_l, gdp_s,comparison_gdp)
+```
+
+### Taking a look at our "complete" Multivariate Time Series 
+
+After finishing all concerns with our missing data, we can combine our time series into a multivariate time series.
+Further, we will have a look at the summary statistics.
+All missing values have been removed and the time series is the same length now.
+Irrespective, there are still remaining issues with our data.
+Its worth mentioning here that our data still is not transformed to accommodate standard assumptions in time series analysis.
+Further, we can see that there is a potential trend in the cO2 and FDI given on the quantiles.
+These issues will be discussed and analysed later on.
+
+```{r}
+# Combining the data into one time series data set
+data <- cbind(gdp, cO2, fdi)
+
+# Examining the summary of our data after "cleaning"
+summary(data)
+
+# Saving the modified data set into single file (optional)
+# write.csv(data, "clean_data.csv")
+```
+
+## c) Give a short description of the selected indicators and motivate your choice of these variables.
+
+This paper examines the relationship between FDI, economic growth and carbon emission.
+Fundamental theories, entangling these variables are for instance the pollution haven theory and the environmental (from now on EKC).
+This research will very briefly elaborate on these theoretical underpinnings to contextualize the economic instruments and introduce each variable sequentelly.
+
+### Foreign direct Investment net inflows 
+
+FDI has gained attention within the field of environmental research.
+Various studies have examined the interconnection of FDI on carbon emission.
+Irrespective, empirical evidence remains inconclusive due to the convoluted nature of the indicators and the general challenge of capturing decisive evidence for the economic impact of macroeconomic indicators.
+Why was foreign direct investment picked as an economic indicator of influence? 
+As argued by e.g. Pao et al. (2011) and various other studies, there has been substantial evidence in both developed and developing countries, suggesting a negative affect of FDI on carbon emission. 
+According to the pollution-haven hypothesis, lower environmental rules make it more attractive for foreign investors, attracting FDI inflows.
+But at the same time, other studies and theories, such as the pollution-halo hypothesis, suggest that the implementation of greener technologies by foreign multinationals leads to diffusion of these advanced implementations (see Pao et al., 2011),
+All in all, this variable has been subject to discussion and henceforth deems relevant for our study. 
+To measure the affect of foreign direct investment on the french economy, this research is using annual data on net inflows of foreign direct investment as a percentage of GDP between 1960 and 2019.
+
+### Economic Performance
+
+Krueger and Grossmann studied the relationship between economic growth and various environmental indicators (Grossman, G., Krueger, A., 1995).
+Their research was published in the Quarterly Journal of Economics in 1995. 
+They result in the conclusion that a certain economic growth threshold will result in a change in behavior.
+So initially, there is an rise in pollution with GDP growth, followed by a improvement of environmental quality after surpassing the $8000 threshold.
+
+To measure the economic performance over time, we are using GDP growth per capita as an annual percentage between 1960 and 2019.
+Given, that a regular GDP measure does not truly capture an increase in relative change in wealth, this paper uses GDP per capita. 
+Further, to truly capture change, we are using the growth percentage. 
+Despite various criticisms of GDP (per capita) as an economic indicator, it is a standard measure within the field.
+The original source quoted on the page of the OECD is the Aggregate National Accounts, formatting the data in accordance with the 2008 System of National Accounts (OECD, 2020).
+Based on our economic theory, this instrument is our independent variable.
+
+### Carbon Emission
+
+The third instrument we are using is carbon emission.
+In total there are seven gases that have disruptive effects on the climate.
+As stated by the OECD (2020): "The data are expressed in CO2 equivalents and refer to gross direct emissions from human activities".
+These gases are all converted into their CO2 equivalent.
+The initial source (referenced by the OECD) of this data is the international energy agency (IEA).
+Here, we are using annual carbon emission measured by Tonnes/capita between 1960 and 2019.
+
+## d) Plot your data and make sure that they are properly formatted, labeled and comprehensible.
+
+Looking at the data set, we can see that there is indeed some potential corroborating evidence, that there may be a trend movement in some of the data. 
+Hence, at a later point, we need to ensure that we transform our data accordingly.
+As we will provide various further plots later on, i will abstain from including too many plots at this early stage and only show the variation of the different instruments.
+
+```{r}
+autoplot(data, main = "Comparing our Multivariate Time Series Data", ylab = "Value of the Variable", xlab = "Year")
+
+# Plot of the separate time series (optional)
+# plot(data, main="Multivariate Time Series of GDP, FDI & CO2 Emission", xlab ="Year")
+```
+
+# Question 2 
+## a) Investigate whether the time series are stationary. Choose an appropriate method to check for stationarity and explain the results. For which task is the stationarity of the time series essential? If your data does not exhibit stationarity, what do you have to do?
+
+To test for whether our data is stationary, there are number of methods. 
+One common method is the augmented dicky-fuller test, testing for unit roots in our AR polynomials. 
+We can see that for none of our economic instruments the p value is highly significant.
+The only variable that is significant is GDP at the 10 percent threshold.
+Henceforth, we fail the reject the null-hypothesis that our data is non-stationary.
+
+```{r, out.width="50%"}
+lapply(data, FUN = adf.test)
+```
+
+The topic of working with non-stationary time series for VAR models  has become a matter of debate within the reserach community.
+Every time we difference our data, we lose information.
+Scholars argue that sometimes its better to not difference at all and continue working with non-stationary data for basic VAR estimations due to the fact that we are not interested in correct point estimates but want to capture the true interconnection and variation of the data (See: Sims (1980) Macroeconomics and Reality).
+
+That being said, for point estimates or hypotheses-tests, non-stationary time series would be problematic.
+Further, one needs to later on make further modifications with respect to the Granger-causality test and the IRF to ensure correct estimates, making the entire analysis more convoluted when working with non-stationary time series.
+Given these insights, we will transform our data, but for reference include the VAR estimation for both transformed and non-transformed data.
+
+To ensure that our instruments are stationary, we need to transform our data.
+One way to transform the data is taking the difference, using the 'diff' function in r.
+Another way to suppress the scale of variation to ensure that some essential properties remain and the variables are somewhat scaled is using the log of the variables.
+Differencing is the more dominant first solution.
+To determine the optimal number of lags/differences, we cna use the ndiffs() function from the 'forecast' package.
+
+As we can see, the optimal number of differences here is 1.
+
+```{r}
+ndif <- lapply(data, ndiffs)
+ndif
+data_diff <- diff(data, differences = 1)
+```
+
+After differencing the data, we can redo the augmented dicky- fuller and examine the data, to ensure that now we have difference stationary time series. 
+
+```{r,"out.width=80%"}
+lapply(data_diff, adf.test)
+```
+
+We can see that the cO2 is still barely insignificant.
+For now, given the recommendation of the ndiff function  and that this is a borderline case that becomes significant at the 10 percent threshold when rounding downward, we will cautiously continue using the first difference.
+At the model diagnostic stage we can again test for serial correlation in our residual and correct our model further.
+Overall, by means of transformation, our variables are all stationary at the first difference as opposed to stationary at the level. 
+Now, plotting these transformed time series, we get the following results.
+
+```{r}
+autoplot(data_diff,
+  main = "Variation in our Instruments",
+  ylab = "Variation", xlab = "Year"
+)
+# Plot of the separate time series (optional)
+# plot(data_diff)
+```
+
+One can see a clear deviation from the former plot, in which a substantial trend was visible. 
+After transforming the data, our data is first difference stationary and we can proceed with our analysis.
+One should note that GDP varies stronger than the other estimates.
+This is something we may keep in mind when further interpreting our results later on.
+
+## b) Plot the autocorrelation function of each time series and give a brief explanation of your results.
+
+To also plot the cross-product of two univariate time series, we can use the Acf function from the forecast package.
+Here, it is important to also look at the different instruments in interaction (cross-correlation) with one another.
+One can spot a trend by looking at whether the first or first few lags are significant, implying that close by lags significantly impact the variance.
+The dashed lined shows us whether correlations are significant different from 0.
+For reference, we include both the transformed and the non-stationary data. 
+
+#### Nonstationary Data 
+
+The data illustrates clear trends and seasonality within the data for both our normal auto-correlation and our cross-correlation.
+To partially accommodate that, we can adjust the optimal lag after determining the optimal lag during the model selection. 
+This will violate a lot of assumptions needed to perform further hypothesis tests and point estimates. 
+Therefore this plot illustrates the importance of transforming our data accordingly. 
+
+```{r}
+Acf(data, lag.max = 59)
+```
+
+#### Weakly Stationary Data 
+
+As one can see, there are no clear trend-like or seasonal persistence within the data after transforming the data.
+We see the first lag to still be somewhat significant for some of the observations.
+As mentioned, this will be accommodated when using our lag structure in our VAR model.
+There are some weakly significant lags, but these are mostly random lags rather than a clear trend.
+Henceforth, one may assume that are data is weakly stationary, centered in 0 and "normally" behaving variance. 
+As mentioned above, this is important for further estimations.
+The same conclusions hold for the cross-correlations.
+
+```{r}
+Acf(data_diff, lag.max = 59)
+```
+
+## c) Select the order of your model based on one of the information criteria that were discussed in the lecture. Compare the information criteria and justify your choice.
+. 
+Firstly, i will provide a brief introduction of the different criteria discussed during the lecture, namely the AIC, BIC and the AICc.
+The core issue of model selection criteria is the balance between goodness of fit and overparameterization.
+Given that the VARselect() packages compares some methods that are not included in the lecture, further explanation will be disregarded here.
+
+### Akaike information criterion(AIC)
+
+This information criterion tests for whiteness of the residuals  and is an important diagnostic check that residuals should pass, as mentioned in the slides. 
+As suggested throughout the course, AIC tends to overparameterize, especially with lower order models.
+Monte Carlo studies provide corroborating evidence for this (see: Slides MTSA: 156/316)
+As we will see, this holds for our data, too. 
+The values of the AIC are highest compared to the other IC. 
+
+### Bayesian information criterion(BIC)
+
+In the VARS package this IC is referred to as the Schwarz Criterion (SC), named after the developer Gideon Schwarz.
+This information criterion tends to select lower order models than compared to AIC because it uses larger penalty terms for parameters.
+Our data confirms this behavior.
+The SC provides continuously lower or equal values as the AIC.
+
+### Corrected AIC (AICC)
+
+This method corrects the bias of AIC to avoid over-parameterization for small sample sizes.
+The AICc penalty somewhere between those of AIC and BIC.
+
+Generally speaking,if there are conflicting recommendations one should evaluate all reasonable suggestions.
+Based on the recommendation by Hyndman, R. J., & Athanasopoulos, G. (2018), I will pick the BIC criterion for further analysis for our VAR model.
+We can further justify our choice when testing for serial correlation, allowing us to check whether our specification was correct.
+
+```{r}
+# IC for our weakly stationary data
+info <- lapply(data_diff, VARselect)
+info
+# Estimation
+var.sc <- VAR(data_diff, lag.max = 57, ic = "SC", type = "const", p = info)
+var.sc
+```
+
+## d) Split your data into a training set and a test set accordingly.  Ensure that the split also makes sense in an economical context. Estimate the VAR model based on the training set and describe the results. Which estimation method did you use? Is it possible to give an economical interpretation of the estimated coeffcients.
+
+We use a 70% to 30% split.
+This is a common proportion, allowing us to train our model sufficiently. 
+This is an interesting split because FDI started peaking in France starting around 2000.
+Therefore, by taking this split, we disentangle the relationship for a more linear period of time.
+
+As suggested in the lecture, if all roots of the characteristic polynomial lie outside the unit circle (> 1), then the process is stationary.
+If all inverse roots lie within the unit circle (< 1), the process is stationary.
+This ensures that our results are stable.
+We are using the VAR estimation method with a constant but no trend, given that trends were removed by differencing the data already.
+Further, we are using the lag structure, suggested by the SC. 
+We can see that the AIC substantially overestimates the lag structure.
+One can see that the effect of the variables on carbon emission is rather low.
+Upon examination, we can see that both GDP and FDI seem to lower the carbon emission.
+But one should note, that these coefficients are somewhat meaningless at this point as this is neither a final form nor the structural form model.
+
+With respect to the interpretation, as mentioned in the lecture, a number of things are to be considered. 
+Generally speaking, only the structural form coefficients entail room for meaningful interpretation.
+To truly interpret the coefficients, we would use further tests by employing innovation accounting. 
+As mentioned in the slides (Chapter 8, Page 229/316) and Sims (1980) two possible methods are response function analysis and prediction error decomposition.
+Those methods use final form models as opposed to ARMA models using reduced form models.
+
+```{r}
+
+# Determining the threshold
+round(60 * .7)
+
+# Splitting the time series into train and test sets
+train <- window(data_diff, start = 1960, end = 2002)
+test <- window(data_diff, start = 2002, end = 2019)
+
+# Model selection for our training set specifically
+select <- lapply(train, VARselect)
+
+# Estimation of our model
+var.train <- VAR(train, lag.max = 40, ic = "SC", type = "const", p = select)
+var.train
+
+# Deep look into the estimation output (optional)
+# summary(var.train, equation ="cO2")
+
+## For reference the IC for our non-stationary data (optional)
+# train <- window(data, start = 1960, end = 2002)
+# info_raw <- lapply(train_raw, VARselect)
+# raw_var.sc <- VAR(train_raw, type = "const",ic = "SC", lag.max=40 , p= info_raw)
+# bias analysis results
+# raw_var.sc$varresult
+```
+
+## e) After the estimation, investigate whether the residuals display serial-correlation. Employ an appropriate test. Why is this step necessary? Choose one time series and plot the residuals.
+
+Testing for serial correlation as part of the model diagnostic, is necessary to examine whether we have resistent lags.
+When there is serial correlation, we could fit a model with a higher order lag structure, until we only have "white noise" left.
+Testing for serial correlation in important to calibrate our model, so that we can employ further tests without violating assumptions for correct estimation.
+It is basically needed to account for further miss-specifications of our residuals in our model, and complements any shortcomings in the early initial stage of testing for unit roots in our polynomials and transforming our data.
+To estimate further models, we need to satisfy the condition that there is no serial correlation, otherwise our estimates will be biased.
+
+Here we have plotted all the residuals, to see whether there are any anomalies and for completeness.
+I am choosing the carbon emission time series for further elaboration.
+E.g. taking a deeper look at the residuals of carbon emission, we can see that the histogram somewhat resembles a normal distribution.
+Again, looking at auto-correlation and partial auto-correlation, we can see that the residuals are stable and there are no serial outliers or persistent lag structures. 
+
+Here, we are using the Portmanteau Test to test for serial correlation.
+After undertaking the serial correlation test, we can see that the test is not significant.
+Henceforth, we don't have serial correlation.
+
+```{r,out.width="50%"}
+serial <- serial.test(var.train)
+serial
+
+# Plotting our residuals for diagnostics.
+plot(serial)
+```
+
+## f) Your model is calibrated based on the training set. Use this model to do a one-step and a three-step forecast. Compare them to the test data. Visualize this step in a comprehensible plot. State the loss function(s) based on which the predictions are evaluated.
+
+The forecast() function from the 'forecast' package uses the mean squared error as its loss function, based on the ETS algorithm.
+The accuracy() function allow for a comparative overview of different potential loss functions. 
+
+Looking at the one step forecast, we can see that the the error, or the loss, is lowest for the predictions for carbon emission.
+Overall, the loss is highest for the FDI instrument.
+As mentioned prior, starting in the early 2000, there a huge spike in FDI. 
+Therefore, it is not surprising that the forecast is not that good, given the unprecedented increase in foreign direct investment. 
+
+```{r}
+# One step forecast
+fit_1 <- forecast(var.train, h = 1)
+autoplot(forecast(var.train, h = 1)) + autolayer(test)
+
+# Evaluating the forecast
+# For further information see: https://otexts.com/fpp2/ets-forecasting.html
+accuracy(fit_1, test, D = 0, d = 1)
+```
+
+Now we can do the same with a multi-step forecast.
+Here, we can similar findings:
+Carbon Emission was forecasted best.
+GDP, which varies stronger, and FDI which started rising early 2000, perform similarly poorly. 
+
+```{r}
+# Three step forecast
+fit_2 <- forecast(var.train, h = 3, )
+autoplot(forecast(var.train, h = 3)) + autolayer(test)
+# Evaluating the three-step forecast
+accuracy(fit_2, test, D = 0, d = 1)
+```
+
+# Question 3
+
+## a) Perform a Granger-Causality test on your general sample to see if the time series in your data set influence each other. Interpret the output.
+
+Granger-causality refers to forecastability, our ability to forecast our Y based on our lagged X cause variable.
+One should note that, for causality function to give reliable results we need all the variables of the multivariate time series to be stationary. 
+One pivotal concern in such tests is that one is not aware of the true effects. 
+Hence, anything that is excluded from our model specification, which might be the underlying determinant of our variable, will not be considered.
+Therefore, these results need to be interpreted with a grain of salt.
+We can see here that neither GDP nor FDI show significant values for Granger- causality.
+Irrespective, GDP does show significant results for instantaneous causality.
+Further, same holds when using GDO and FDI both as causes together but the p value is slightly higher.
+
+```{r}
+causality(var.train,
+  cause = "gdp"
+)
+causality(var.train,
+  cause = "fdi"
+)
+causality(var.train,
+  cause = c("fdi", "gdp")
+)
+```
+
+## b) Perform an Impulse-Response Analysis of your model built in assignment 2 and give brief explanation of the results.
+
+As we are interested in our carbon emission, i will only report the impact of the instruments on carbon emission.
+We can see that for all IRF-plots, the effect diminishes over time.
+The dotted line show us the 95th percent interval estimate.
+A positive shock in GDP causes a decrease in carbon emission up to the 2nd time unit, then recovering.
+This is consistent with the literature.
+Moreover, the same relationship holds for FDI, but the effect is very small compared to GDP.
+There are various reasons for this.
+Of course, intuitively speaking, on the one hand FDI is a less significant indicator.
+But we should also consider that by differencing our data, a lot of our FDI observations are now centered in 0 or close to 0.
+GDP on the other hand, is more volatile, even after taking the first difference and inducing a lag structure.
+Again, we see that carbon emission is strongly dependent on itself in the second plot for the first 4 units, and then resolves to 0.
+
+```{r,out.width="50%"}
+
+impresp <- irf(var.sc, response = "cO2", n.ahead = 10)
+plot(impresp)
+
+# One could also look at all models by excluding the response. (optional)
+# impresp_all <- irf(var.sc, n.ahead=10)
+```
+
+## c) Perform a Forecast Error Variance Decomposition and visualize them in a plot. Explain your results.
+
+We can see that for cO2 and for FDI, GDP has a substantial impact. 
+For cO2, we can see that approximately slightly less than 80 percent of the variance in cO2 is caused by cO2 itself.
+Further, we can see that about 20 percent of carbon emission variance is caused by GDP, implying that there is a underlying relationship.
+The affect of FDI on cO2 is rather marginal here, accounting for at most one digit percentages or, more frequently, less. 
+We can see that this relationship does hold over time. 
+
+Further, we can see that GDP variance is predominately determined by GDP itself.
+On the other hand, GDP does seem to have a marginal impact of approximately causing close to 10 percent of FDI variance.
+Again, this relationship is persistent over time.
+
+```{r,out.width="120%"}
+fevd <- fevd(var.sc)
+plot(fevd)
+```
+
+# References 
+
+Grossman, G., & Krueger, A. (1995). Economic Growth and the Environment. The Quarterly Journal of Economics, 110(2), 353-377. Retrieved November 8, 2020, from http://www.jstor.org/stable/2118443
+
+Hyndman, R. J., & Athanasopoulos, G. (2018). Forecasting: principles and practice. OTexts.
+
+Hyndman, R. J., Athanasopoulos, G., Bergmeir, C., Caceres, G., Chhay, L., O'Hara-Wild, M., ... & Razbash, S. (2020). Package ‘forecast’. Online] https://cran. r-project. org/web/packages/forecast/forecast. pdf.
+
+OECD (2020), Air and GHG emissions (indicator). doi: 10.1787/93d10cf7-en (Accessed on 06 November 2020)
+
+Pao, H. T., & Tsai, C. M. (2011). Multivariate Granger causality between CO2 emissions, energy consumption, FDI (foreign direct investment) and GDP (gross domestic product): evidence from a panel of BRIC (Brazil, Russian Federation, India, and China) countries. Energy, 36(1), 685-693.
+
+Pfaff, B. (2008). VAR, SVAR and SVEC models: Implementation within R package vars. Journal of Statistical Software, 27(4), 1-32.
+
+Sims, C. (1980). Macroeconomics and Reality. Econometrica, 48(1), 1-48. doi:10.2307/1912017
